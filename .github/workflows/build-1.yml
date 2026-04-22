@@ -1,0 +1,106 @@
+name: Build APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout code
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # 2. Setup Java
+      - name: Set up Java 17
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # 3. Setup Flutter
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.19.6'
+          channel: 'stable'
+          cache: true
+
+      # 4. Auto-generate android folder
+      - name: Generate android folder
+        run: |
+          flutter create --org com.mykeep --project-name my_keep /tmp/flutter_base
+          cp -r /tmp/flutter_base/android ./android
+
+      # 5. Download Pacifico font
+      - name: Download fonts
+        run: |
+          mkdir -p assets/fonts
+          curl -fL "https://github.com/google/fonts/raw/main/ofl/pacifico/Pacifico-Regular.ttf" \
+            -o assets/fonts/Pacifico-Regular.ttf
+          # Inter will be served by google_fonts package at runtime
+          # Using Pacifico as build placeholder for Inter slots
+          cp assets/fonts/Pacifico-Regular.ttf assets/fonts/Inter-Regular.ttf
+          cp assets/fonts/Pacifico-Regular.ttf assets/fonts/Inter-Medium.ttf
+          cp assets/fonts/Pacifico-Regular.ttf assets/fonts/Inter-SemiBold.ttf
+          cp assets/fonts/Pacifico-Regular.ttf assets/fonts/Inter-Bold.ttf
+
+      # 6. Create app icon (yellow square)
+      - name: Create app icon
+        run: |
+          mkdir -p assets/icons
+          python3 - <<'PYEOF'
+import struct, zlib
+
+def make_png(size=512):
+    def chunk(name, data):
+        c = name + data
+        return struct.pack('>I', len(data)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
+    sig = b'\x89PNG\r\n\x1a\n'
+    ihdr = chunk(b'IHDR', struct.pack('>IIBBBBB', size, size, 8, 2, 0, 0, 0))
+    raw = []
+    for y in range(size):
+        row = bytearray([0])
+        for x in range(size):
+            cx, cy = x - size//2, y - size//2
+            r = size * 0.42
+            if abs(cx) < r and abs(cy) < r:
+                row.extend([255, 215, 0])   # Yellow
+            else:
+                row.extend([255, 249, 230]) # Warm white bg
+        raw.append(bytes(row))
+    idat = chunk(b'IDAT', zlib.compress(b''.join(raw), 9))
+    iend = chunk(b'IEND', b'')
+    return sig + ihdr + idat + iend
+
+data = make_png()
+open('assets/icons/app_icon.png', 'wb').write(data)
+open('assets/icons/app_icon_fg.png', 'wb').write(data)
+print("Icons created")
+PYEOF
+
+      # 7. Install dependencies
+      - name: Flutter pub get
+        run: flutter pub get
+
+      # 8. Generate launcher icons
+      - name: Generate launcher icons
+        run: dart run flutter_launcher_icons
+        continue-on-error: true
+
+      # 9. Build APK
+      - name: Build APK
+        run: flutter build apk --release --no-tree-shake-icons
+
+      # 10. Upload APK
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyKeep-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 30
